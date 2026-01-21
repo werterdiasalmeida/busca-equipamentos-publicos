@@ -69,6 +69,10 @@
       border-radius: 4px;
       border-left: 3px solid #4CAF50;
       font-size: 13px;
+      cursor: pointer;
+    }
+    .result-item:hover {
+      background: #e0e0e0;
     }
     .result-dot {
       width: 12px;
@@ -139,13 +143,13 @@
 
     let map = null;
     let currentLayers = [];
+    let equipamentosData = []; // Armazena dados dos equipamentos para clique
 
     function initMap() {
       map = L.map('map').setView([-5.3364, -41.5346], 15);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
       }).addTo(map);
-      // ❌ Removido: desenharLote(); -> busca só ao clicar no botão
     }
 
     function calcularCentroide(coords) {
@@ -178,10 +182,41 @@
       currentLayers.forEach(layer => map.removeLayer(layer));
       currentLayers = [];
       document.getElementById('results').innerHTML = '';
+      equipamentosData = [];
+    }
+
+    function formatarPopup(tags, dist) {
+      let html = '<b>' + (tags.name || 'Sem nome') + '</b><br>';
+
+      const tipo = TIPO_PARA_NOME[tags.amenity] || tags.amenity || 'Outro';
+      html += '<b>Tipo:</b> ' + tipo + '<br>';
+      html += '<b>Distância:</b> ' + dist + ' m<br>';
+
+      // Dados adicionais em português
+      if (tags.operator) html += '<b>Operador:</b> ' + tags.operator + '<br>';
+      if (tags.phone || tags['contact:phone']) html += '<b>Telefone:</b> ' + (tags.phone || tags['contact:phone']) + '<br>';
+      if (tags.email || tags['contact:email']) html += '<b>E-mail:</b> ' + (tags.email || tags['contact:email']) + '<br>';
+      if (tags.website || tags.url) html += '<b>Site:</b> <a href="' + (tags.website || tags.url) + '" target="_blank">' + (tags.website || tags.url) + '</a><br>';
+      if (tags.opening_hours) html += '<b>Horário de Funcionamento:</b> ' + tags.opening_hours + '<br>';
+
+      // Montar endereço
+      let endereco = '';
+      if (tags['addr:housenumber']) endereco += tags['addr:housenumber'] + ', ';
+      if (tags['addr:street']) endereco += tags['addr:street'] + ', ';
+      if (tags['addr:city']) endereco += tags['addr:city'];
+      if (tags['addr:postcode']) endereco += ' - CEP: ' + tags['addr:postcode'];
+
+      if (endereco) html += '<b>Endereço:</b> ' + endereco.trim().replace(/,\s*$/, '') + '<br>';
+
+      if (tags.wheelchair) html += '<b>Acessibilidade (cadeirante):</b> ' + (tags.wheelchair === 'yes' ? 'Sim' : 'Não') + '<br>';
+      if (tags.fee) html += '<b>Taxa de Entrada:</b> ' + (tags.fee === 'yes' ? 'Sim' : 'Não') + '<br>';
+      if (tags.description) html += '<b>Descrição:</b> ' + tags.description + '<br>';
+      if (tags['ref:CNES']) html += '<b>Código CNES:</b> ' + tags['ref:CNES'] + '<br>';
+
+      return html;
     }
 
     async function buscarEquipamentosPublicos(centro, raioMetros) {
-      // Mostra mensagem de carregamento
       document.getElementById('results').innerHTML = '<p>Buscando equipamentos públicos...</p>';
 
       const [lat, lng] = centro;
@@ -222,7 +257,6 @@ out center;
           const dist = Math.round(distanciaHaversine(centro[0], centro[1], lat, lng));
           if (dist > raioMetros) continue;
 
-          // Define cor
           let cor = '#FFA500';
           if (['hospital', 'clinic', 'doctors', 'pharmacy'].includes(amenity)) cor = '#FF0000';
           else if (['school', 'university', 'college'].includes(amenity)) cor = '#0000FF';
@@ -236,17 +270,19 @@ out center;
           }).addTo(map);
           currentLayers.push(linha);
 
+          const popupContent = formatarPopup(el.tags, dist);
+
           const marker = L.circleMarker([lat, lng], {
             radius: 6,
             color: cor,
             fillColor: cor,
             fillOpacity: 0.8
           }).addTo(map)
-            .bindPopup(`<b>${nome}</b><br>Tipo: ${tipoExibicao}<br>Distância: ${dist} m`);
+            .bindPopup(popupContent);
 
           currentLayers.push(marker);
           boundsPoints.push([lat, lng]);
-          resultados.push({ nome, tipo: tipoExibicao, dist, lat, lng, cor });
+          resultados.push({ nome, tipo: tipoExibicao, dist, lat, lng, cor, tags: el.tags, marker });
         }
 
         // Ajusta zoom para mostrar tudo
@@ -259,14 +295,17 @@ out center;
           map.fitBounds(L.latLngBounds(boundsPoints).pad(0.1));
         }
 
-        // Exibe resultados no sidebar com bolinhas coloridas, ordenados por distância
+        // ✅ ORDENAR ANTES DE ARMAZENAR EM equipamentosData
+        resultados.sort((a, b) => a.dist - b.dist);
+        equipamentosData = [...resultados]; // Agora está ordenado
+
+        // Exibe resultados no sidebar com bolinhas coloridas
         const resultsDiv = document.getElementById('results');
         if (resultados.length === 0) {
           resultsDiv.innerHTML = `<p>Nenhum equipamento público encontrado dentro de ${raioMetros} m.</p>`;
         } else {
-          resultados.sort((a, b) => a.dist - b.dist); // Ordem crescente
-          resultsDiv.innerHTML = resultados.map(r => `
-            <div class="result-item">
+          resultsDiv.innerHTML = resultados.map((r, idx) => `
+            <div class="result-item" onclick="centralizarEquipamento(${idx})">
               <div class="result-dot" style="background-color: ${r.cor};"></div>
               <div class="result-text">
                 <b>${r.nome}</b>
@@ -280,6 +319,14 @@ out center;
         console.error(err);
         document.getElementById('results').innerHTML = 
           '<p style="color:red;">Erro ao buscar dados.<br>Tente com raio ≤ 2000m.</p>';
+      }
+    }
+
+    function centralizarEquipamento(index) {
+      const equip = equipamentosData[index];
+      if (equip && equip.marker) {
+        map.setView([equip.lat, equip.lng], 17); // Zoom mais próximo
+        equip.marker.openPopup();
       }
     }
 
